@@ -131,25 +131,59 @@ namespace cryptonote
       rct::rctSig &rv = tx.rct_signatures;
       if (rv.type == rct::RCTType::Null)
         return true;
-      if (rv.outPk.size() != tx.vout.size())
+      // HF21: tx_out_zarcanum outputs carry their own amount commitment and
+      // range proof, so they never appear in the legacy outPk vector. Counting
+      // them here would make every private-token transaction fail to re-parse.
+      const size_t native_outputs = std::count_if(tx.vout.begin(), tx.vout.end(), [](const tx_out& out) {
+        return !std::holds_alternative<tx_out_zarcanum>(out.target);
+      });
+      if (rv.outPk.size() != native_outputs)
       {
         LOG_PRINT_L1("Failed to parse transaction from blob, bad outPk size in tx " << get_transaction_hash(tx));
         return false;
       }
-      for (size_t n = 0; n < tx.rct_signatures.outPk.size(); ++n)
+      size_t rct_output_index = 0;
+      for (size_t n = 0; n < tx.vout.size(); ++n)
       {
+        if (std::holds_alternative<tx_out_zarcanum>(tx.vout[n].target))
+          continue;
         if (!std::holds_alternative<txout_to_key>(tx.vout[n].target))
         {
           LOG_PRINT_L1("Unsupported output type in tx " << get_transaction_hash(tx));
           return false;
         }
-        rv.outPk[n].dest = rct::pk2rct(var::get<txout_to_key>(tx.vout[n].target).key);
+        rv.outPk[rct_output_index++].dest = rct::pk2rct(var::get<txout_to_key>(tx.vout[n].target).key);
       }
 
       if (!base_only)
       {
         const bool bulletproof = rct::is_rct_bulletproof(rv.type);
-        if (bulletproof)
+        const bool bulletproof_plus = rct::is_rct_bulletproof_plus(rv.type);
+        if (bulletproof_plus)
+        {
+          if (rv.p.bulletproofs_plus.size() != 1)
+          {
+            LOG_PRINT_L1("Failed to parse transaction from blob, bad bulletproofs_plus size in tx " << get_transaction_hash(tx));
+            return false;
+          }
+          if (rv.p.bulletproofs_plus[0].L.size() < 6)
+          {
+            LOG_PRINT_L1("Failed to parse transaction from blob, bad bulletproofs_plus L size in tx " << get_transaction_hash(tx));
+            return false;
+          }
+          const size_t max_outputs = rct::n_bulletproof_plus_max_amounts(rv.p.bulletproofs_plus[0]);
+          if (max_outputs < native_outputs)
+          {
+            LOG_PRINT_L1("Failed to parse transaction from blob, bad bulletproofs_plus max outputs in tx " << get_transaction_hash(tx));
+            return false;
+          }
+          const size_t n_amounts = native_outputs;
+          CHECK_AND_ASSERT_MES(n_amounts == rv.outPk.size(), false, "Internal error filling out V");
+          rv.p.bulletproofs_plus[0].V.resize(n_amounts);
+          for (size_t i = 0; i < n_amounts; ++i)
+            rv.p.bulletproofs_plus[0].V[i] = rct::scalarmultKey(rv.outPk[i].mask, rct::INV_EIGHT);
+        }
+        else if (bulletproof)
         {
           if (rv.p.bulletproofs.size() != 1)
           {
@@ -162,12 +196,12 @@ namespace cryptonote
             return false;
           }
           const size_t max_outputs = 1 << (rv.p.bulletproofs[0].L.size() - 6);
-          if (max_outputs < tx.vout.size())
+          if (max_outputs < native_outputs)
           {
             LOG_PRINT_L1("Failed to parse transaction from blob, bad bulletproofs max outputs in tx " << get_transaction_hash(tx));
             return false;
           }
-          const size_t n_amounts = tx.vout.size();
+          const size_t n_amounts = native_outputs;
           CHECK_AND_ASSERT_MES(n_amounts == rv.outPk.size(), false, "Internal error filling out V");
           rv.p.bulletproofs[0].V.resize(n_amounts);
           for (size_t i = 0; i < n_amounts; ++i)
