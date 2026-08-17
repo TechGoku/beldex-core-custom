@@ -51,6 +51,30 @@ using namespace std::literals;
 #define CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE             10
 #define CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE_V17         2
 #define CRYPTONOTE_DEFAULT_TX_MIXIN                     9
+
+// ── Private token ring design (HF21+) ─────────────────────────────────
+//
+// Zarcanum inputs (spending a tx_out_zarcanum) use the SAME amount-0 output
+// pool as native BDX RingCT outputs for decoy selection.  Both BDX RCT outputs
+// (txout_to_key) and private token outputs (tx_out_zarcanum) store
+// tx_out.amount == 0 on-chain, so they live in the same bucket.
+//
+// Amount balance and token integrity are proven separately:
+//   - Balance:   zc_balance_proof     (double Schnorr over X and G)
+//   - Token:     BGE surjection proof (proves output token is real)
+//   - Range:     BulletproofPlus      (proves amounts in [0, 2^64))
+//
+// Result: no bootstrapping problem -- day-1 token transfers can draw decoys
+// from the existing BDX output pool.
+#define TOKEN_RING_SIZE                                 CRYPTONOTE_DEFAULT_TX_MIXIN // 9, same as BDX
+
+// ── Mandatory fan-out for deploy / mint transactions (HF21+) ───────────────
+//
+// Every deploy_new_token or mint_token transaction MUST produce at least
+// MIN_TOKEN_MINT_OUTPUTS tx_out_zarcanum outputs.  Value = mixin + 1 = 10:
+// guarantees a full ring of 9 decoys + 1 real is always achievable using only
+// prior ZC outputs of the same token, independent of the BDX pool.
+#define MIN_TOKEN_MINT_OUTPUTS                          (CRYPTONOTE_DEFAULT_TX_MIXIN + 1) // 10
 #define FINAL_SUBSIDY_PER_MINUTE                        ((uint64_t)500000000) // 3 * pow(10, 7)
 
 #define STAKING_REQUIREMENT_LOCK_BLOCKS_EXCESS          20
@@ -77,6 +101,7 @@ static_assert(STAKING_PORTIONS % 12 == 0, "Use a multiple of twelve, so that it 
 #define FEE_PER_BYTE_V12                                ((uint64_t)17200) // Higher fee (and fallback) in v12 (only, v13 switches back)
 #define FEE_PER_OUTPUT                                  ((uint64_t)20000000) // 0.02 BDX per tx output (in addition to the per-byte fee), starting in v13
 #define FEE_PER_OUTPUT_V17                              ((uint64_t)100000) // 0.0001 BDX per tx output 
+#define FEE_PER_OUTPUT_V21                              ((uint64_t)10000000) // 0.01 BDX per tx output (HF21+)
 #define DYNAMIC_FEE_PER_KB_BASE_BLOCK_REWARD            ((uint64_t)10000000000) // 10 * pow(10,12)
 #define DYNAMIC_FEE_PER_KB_BASE_FEE_V5                  ((uint64_t)400000000)
 #define DYNAMIC_FEE_REFERENCE_TRANSACTION_WEIGHT        ((uint64_t)300000)
@@ -194,6 +219,7 @@ constexpr uint64_t DIFFICULTY_BLOCKS_COUNT(bool before_hf16)
 #define HF_VERSION_CLSAG                        cryptonote::network_version_15_flash
 #define HF_VERSION_PROOF_BTENC                  cryptonote::network_version_18_bns
 #define HF_VERSION_BULLETPROOF_PLUS             cryptonote::network_version_20_bulletproof_plus
+#define HF_VERSION_PRIVATE_TOKENS               cryptonote::network_version_21_private_tokens
 
 #define PER_KB_FEE_QUANTIZATION_DECIMALS        8
 
@@ -272,6 +298,12 @@ namespace config
   inline constexpr std::string_view HASH_KEY_CLSAG_ROUND = "CLSAG_round"sv;
   inline constexpr std::string_view HASH_KEY_CLSAG_AGG_0 = "CLSAG_agg_0"sv;
   inline constexpr std::string_view HASH_KEY_CLSAG_AGG_1 = "CLSAG_agg_1"sv;
+  // 3-layer CLSAG-GGX (zarcanum ZC_sig): layer 0 = stealth address (G),
+  // layer 1 = amount commitment (G), layer 2 = blinded token id (X).
+  inline constexpr std::string_view HASH_KEY_CLSAG_GGX_ROUND = "CLSAG_GGX_round"sv;
+  inline constexpr std::string_view HASH_KEY_CLSAG_GGX_AGG_0 = "CLSAG_GGX_agg_0"sv;
+  inline constexpr std::string_view HASH_KEY_CLSAG_GGX_AGG_1 = "CLSAG_GGX_agg_1"sv;
+  inline constexpr std::string_view HASH_KEY_CLSAG_GGX_AGG_2 = "CLSAG_GGX_agg_2"sv;
 
   namespace testnet
   {
@@ -356,6 +388,7 @@ namespace cryptonote
     network_version_18_bns,
     network_version_19,
     network_version_20_bulletproof_plus,
+    network_version_21_private_tokens, // Private custom token transfers (confidential assets)
 
     network_version_count,
   };

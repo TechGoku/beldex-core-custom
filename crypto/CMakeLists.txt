@@ -34,6 +34,7 @@ add_library(cncrypto
   crypto-ops-data.c
   crypto-ops.c
   crypto.cpp
+  token_proofs.cpp
   groestl.c
   hash-extra-blake.c
   hash-extra-groestl.c

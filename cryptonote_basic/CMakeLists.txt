@@ -35,7 +35,8 @@ add_library(cryptonote_basic
   difficulty.cpp
   hardfork.cpp
   miner.cpp
-  tx_extra.cpp)
+  tx_extra.cpp
+  token_descriptor_operation_utils.cpp)
 
 target_link_libraries(cryptonote_basic
   PRIVATE

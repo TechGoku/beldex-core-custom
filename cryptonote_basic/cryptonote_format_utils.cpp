@@ -923,6 +923,164 @@ namespace cryptonote
     return result;
   }
   //---------------------------------------------------------------
+  //---------------------------------------------------------------
+  bool add_token_descriptor_operation_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_token_descriptor_operation& op)
+  {
+    tx_extra_field field = op;
+    bool result = add_tx_extra_field_to_tx_extra(tx_extra, field);
+    CHECK_AND_NO_ASSERT_MES_L1(result, false, "failed to serialize tx extra token descriptor operation");
+    return result;
+  }
+  //---------------------------------------------------------------
+  bool get_token_descriptor_operation_from_tx_extra(const std::vector<uint8_t>& tx_extra, tx_extra_token_descriptor_operation& op, size_t skip)
+  {
+    return get_field_from_tx_extra(tx_extra, op, skip);
+  }
+  //---------------------------------------------------------------
+  bool is_out_to_acc(const account_keys& acc, const tx_out_zarcanum& zout,
+                     const crypto::public_key& tx_pub_key, size_t output_index)
+  {
+    crypto::key_derivation derivation;
+    if (!acc.get_device().generate_key_derivation(tx_pub_key, acc.m_view_secret_key, derivation))
+      return false;
+    crypto::public_key expected;
+    if (!acc.get_device().derive_public_key(derivation, output_index,
+                                            acc.m_account_address.m_spend_public_key, expected))
+      return false;
+    return expected == zout.stealth_address;
+  }
+  //---------------------------------------------------------------
+  rct::key zarcanum_derivation_to_scalar(const crypto::key_derivation& derivation,
+                                          size_t output_index,
+                                          const char* domain)
+  {
+    // Base scalar from the standard derivation path
+    crypto::ec_scalar base{};
+    crypto::derivation_to_scalar(derivation, output_index, base);
+
+    // Domain-separate by hashing: H(base || domain_string)
+    // This ensures "token_blind", "amount_mask", "enc_amount" produce
+    // independent, uncorrelated scalars from the same derivation.
+    const size_t domain_len = strlen(domain);
+    std::vector<uint8_t> buf(32 + domain_len);
+    memcpy(buf.data(), base.data, 32);
+    memcpy(buf.data() + 32, domain, domain_len);
+
+    rct::key result;
+    keccak(buf.data(), (int)buf.size(), result.bytes, 32);
+    sc_reduce32(result.bytes);
+    return result;
+  }
+  //---------------------------------------------------------------
+  bool decode_zarcanum_output(const account_keys& acc,
+                               const tx_out_zarcanum& zout,
+                               const crypto::key_derivation& derivation,
+                               size_t output_index,
+                               uint64_t& amount_out,
+                               crypto::token_id& token_id_out,
+                               rct::key& amount_mask_out,
+                               rct::key& token_blinding_mask_out)
+  {
+    // 1. Ownership has already been verified by check_acc_out_precomp_once / is_out_to_acc_precomp
+
+    // 2. Recover token blinding mask r and plaintext token_id
+    //    T = token_id + r*X  =>  token_id = T - r*X
+    rct::key r = zarcanum_derivation_to_scalar(derivation, output_index, "token_blind");
+    rct::key rX = rct::scalarmultX(r);
+    rct::key token_id_rct;
+    rct::subKeys(token_id_rct, rct::tid2rct(zout.blinded_token_id), rX);
+    token_id_out = rct::rct2tid(token_id_rct);
+    token_blinding_mask_out = r;
+
+    // 3. Recover amount mask and decrypt amount
+    //    C = amount*T + mask*G  (we verify this below)
+    amount_mask_out = zarcanum_derivation_to_scalar(derivation, output_index, "amount_mask");
+
+    // 4. Decrypt amount: enc_amount XOR le64(enc_mask)
+    rct::key enc_mask = zarcanum_derivation_to_scalar(derivation, output_index, "enc_amount");
+    uint64_t enc_mask_64;
+    memcpy(&enc_mask_64, enc_mask.bytes, sizeof(uint64_t));
+    amount_out = zout.encrypted_amount ^ enc_mask_64;
+
+    // 5. Verify: recompute amount commitment and compare.
+    //    C = amount*T + mask*G -- the commitment is built on this output's
+    //    OWN blinded token id T (zout.blinded_token_id), not the recovered
+    //    plaintext token_id -- see rct::commitToken.
+    rct::key expected_C = rct::commitToken(amount_mask_out, rct::tid2rct(zout.blinded_token_id), amount_out);
+    if (expected_C != rct::pk2rct(zout.amount_commitment))
+    {
+      MWARNING("zarcanum output commitment mismatch — output corrupted or not ours");
+      return false;
+    }
+
+    return true;
+  }
+  //---------------------------------------------------------------
+  std::string print_token_amount(uint64_t amount, uint8_t decimal_point, bool strip_zeros)
+  {
+    std::string s = std::to_string(amount);
+    if (s.size() < static_cast<size_t>(decimal_point) + 1)
+      s.insert(0, static_cast<size_t>(decimal_point) + 1 - s.size(), '0');
+
+    if (decimal_point > 0)
+      s.insert(s.size() - decimal_point, ".");
+
+    if (strip_zeros && decimal_point > 0)
+    {
+      while (!s.empty() && s.back() == '0')
+        s.pop_back();
+      if (!s.empty() && s.back() == '.')
+        s.pop_back();
+    }
+
+    return s;
+  }
+  //---------------------------------------------------------------
+  bool parse_token_amount(uint64_t& amount, std::string_view str_amount, uint8_t decimal_point)
+  {
+    while (!str_amount.empty() && std::isspace((unsigned char)str_amount.front()))
+      str_amount.remove_prefix(1);
+    while (!str_amount.empty() && std::isspace((unsigned char)str_amount.back()))
+      str_amount.remove_suffix(1);
+
+    std::string str(str_amount);
+    auto point_index = str.find_first_of('.');
+    size_t fraction_size = 0;
+
+    if (point_index != std::string::npos)
+    {
+      fraction_size = str.size() - point_index - 1;
+      while (fraction_size > 0 && str.back() == '0')
+      {
+        str.pop_back();
+        --fraction_size;
+      }
+      if (fraction_size > decimal_point)
+        return false; // too many decimal places
+      str.erase(point_index, 1);
+    }
+
+    if (str.empty())
+      return false;
+
+    if (fraction_size < decimal_point)
+      str.append(decimal_point - fraction_size, '0');
+
+    for (char c : str)
+      if (!std::isdigit((unsigned char)c))
+        return false;
+
+    try
+    {
+      amount = std::stoull(str);
+    }
+    catch (const std::exception&)
+    {
+      return false;
+    }
+    return true;
+  }
+  //---------------------------------------------------------------
   bool get_inputs_money_amount(const transaction& tx, uint64_t& money)
   {
     money = 0;
@@ -1084,6 +1242,16 @@ namespace cryptonote
     size_t i = 0;
     for(const tx_out& o:  tx.vout)
     {
+      if (std::holds_alternative<tx_out_zarcanum>(o.target))
+      {
+        // HF21: confidential output -- the plaintext amount is 0 on-chain; the
+        // wallet decrypts the real amount via decode_zarcanum_output(). Only
+        // record the index here; money_transfered is deliberately not updated.
+        if (is_out_to_acc(acc, var::get<tx_out_zarcanum>(o.target), tx_pub_key, i))
+          outs.push_back(i);
+        i++;
+        continue;
+      }
       CHECK_AND_ASSERT_MES(std::holds_alternative<txout_to_key>(o.target), false, "wrong type id in transaction out" );
       if(is_out_to_acc(acc, var::get<txout_to_key>(o.target), tx_pub_key, additional_tx_pub_keys, i))
       {
@@ -1252,11 +1420,38 @@ namespace cryptonote
     {
       serialization_s::binary_string_archiver ba;
       size_t mixin = 0;
-      if (t.vin.size() > 0 && std::holds_alternative<txin_to_key>(t.vin[0]))
-        mixin = var::get<txin_to_key>(t.vin[0]).key_offsets.size() - 1;
+      if (t.vin.size() > 0)
+      {
+        if (std::holds_alternative<txin_to_key>(t.vin[0]))
+          mixin = var::get<txin_to_key>(t.vin[0]).key_offsets.size() - 1;
+        else if (std::holds_alternative<txin_zc_input>(t.vin[0]))
+          mixin = var::get<txin_zc_input>(t.vin[0]).key_offsets.size() - 1;
+      }
+      // HF21: the native rct prunable arrays are sized to the non-zarcanum
+      // in/out count -- zarcanum in/outs are proven via zc_sig / token_proofs,
+      // not the native CLSAGs/pseudoOuts. Must match transaction::serialize()
+      // in cryptonote_basic.h exactly.
+      size_t native_inputs = 0;
+      for (const auto& in : t.vin)
+        if (std::holds_alternative<txin_to_key>(in))
+          ++native_inputs;
+      size_t native_outputs = 0;
+      for (const auto& o : t.vout)
+        if (!std::holds_alternative<tx_out_zarcanum>(o.target))
+          ++native_outputs;
       try {
         const_cast<transaction&>(t).rct_signatures.p.serialize_rctsig_prunable(
-                ba, t.rct_signatures.type, t.vin.size(), t.vout.size(), mixin);
+                ba, t.rct_signatures.type, native_inputs, native_outputs, mixin);
+        // HF21: the ZC input signatures (zc_sig) and token_proofs are part of
+        // the prunable section on the wire, so the prunable hash must cover
+        // them too -- zc_sig first then token_proofs, under the SAME gates and
+        // in the SAME order as transaction::serialize(), or the tx hash will
+        // not reproduce.
+        if (t.has_zarcanum_inputs())
+          serialization_s::value(ba, const_cast<transaction&>(t).zc_sig);
+        if (!t.token_proofs.empty() || t.has_zarcanum_outputs()
+            || t.type == txtype::update_token || t.type == txtype::burn_token)
+          serialization_s::value(ba, const_cast<transaction&>(t).token_proofs);
       } catch (const std::exception& e) {
         LOG_ERROR("Failed to serialize rct signatures (prunable): " << e.what());
         return false;

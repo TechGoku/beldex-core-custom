@@ -93,6 +93,28 @@ namespace cryptonote
     crypto::public_key key;
   };
 
+  // Private token output (HF21+).
+  // Carries a blinded token ID and a Pedersen amount commitment; the plaintext
+  // amount and token identity are only recoverable by the recipient.
+  struct tx_out_zarcanum
+  {
+    crypto::public_key stealth_address   = crypto::null_pkey; // one-time stealth address
+    crypto::public_key amount_commitment = crypto::null_pkey; // C = amount*T + mask*G (T = blinded_token_id)
+    crypto::token_id   blinded_token_id  = crypto::null_tid;  // T = token_id + r*X
+    uint64_t           encrypted_amount  = 0;                 // amount XOR H_s("enc_amount"||derivation||idx)
+    uint8_t            mix_attr          = 0;
+    uint8_t            version           = 0;
+
+    BEGIN_SERIALIZE_OBJECT()
+      FIELD(stealth_address)
+      FIELD(amount_commitment)
+      FIELD(blinded_token_id)
+      VARINT_FIELD(encrypted_amount)
+      FIELD(mix_attr)
+      FIELD(version)
+    END_SERIALIZE()
+  };
+
 
   /* inputs */
 
@@ -147,9 +169,23 @@ namespace cryptonote
   };
 
 
-  using txin_v = std::variant<txin_gen, txin_to_script, txin_to_scripthash, txin_to_key>;
+  // Private-token/ZC input (HF21+). Deliberately carries no plaintext token id
+  // and no amount -- both stay hidden behind the ZC_sig.
+  struct txin_zc_input
+  {
+    std::vector<uint64_t> key_offsets;
+    crypto::key_image k_image;
 
-  using txout_target_v = std::variant<txout_to_script, txout_to_scripthash, txout_to_key>;
+    BEGIN_SERIALIZE_OBJECT()
+      FIELD(key_offsets)
+      FIELD(k_image)
+    END_SERIALIZE()
+  };
+
+
+  using txin_v = std::variant<txin_gen, txin_to_script, txin_to_scripthash, txin_to_key, txin_zc_input>;
+
+  using txout_target_v = std::variant<txout_to_script, txout_to_scripthash, txout_to_key, tx_out_zarcanum>;
 
   //typedef std::pair<uint64_t, txout> out_t;
   struct tx_out
@@ -184,7 +220,7 @@ namespace cryptonote
     txversion version;
     txtype type;
 
-    bool is_transfer() const { return type == txtype::standard || type == txtype::stake || type == txtype::beldex_name_system || type == txtype::coin_burn; }
+    bool is_transfer() const { return type == txtype::standard || type == txtype::stake || type == txtype::beldex_name_system || type == txtype::coin_burn || type == txtype::deploy_new_token || type == txtype::mint_token || type == txtype::update_token || type == txtype::burn_token; }
 
     // not used after version 2, but remains for compatibility
     uint64_t unlock_time;  //number of block (or time), used as a limitation like: spend this tx not early then block/time
@@ -244,6 +280,32 @@ namespace cryptonote
   public:
     std::vector<std::vector<crypto::signature>> signatures; //count signatures  always the same as inputs count
     rct::rctSig rct_signatures;
+
+    // Private token input signatures (HF21+): one entry per confidential
+    // (zarcanum) input being spent, in tx.vin order. Each is a signature_v (a
+    // variant currently holding only ZC_sig), so it serializes as
+    // { "ZC_sig": {...} } inside the tx "signatures" array. NOT in token_proofs.
+    std::vector<rct::signature_v> zc_sig;
+
+    // Private token proofs (HF21+). Empty for non-token transactions.
+    // Contains: zc_token_surjection_proof, zc_balance_proof,
+    //           token_operation_proof, token_operation_ownership_proof,
+    //           zc_outs_range_proof.
+    std::vector<rct::token_proof_v> token_proofs;
+
+    // Returns true if any output is a tx_out_zarcanum (private token).
+    bool has_zarcanum_outputs() const {
+      return std::any_of(vout.begin(), vout.end(),
+        [](const tx_out& o){ return std::holds_alternative<tx_out_zarcanum>(o.target); });
+    }
+
+    // Returns true if any input is a txin_zc_input (private token spend).
+    // Prefix-derivable, so it decides whether the tx carries a zc_sig
+    // ("signatures") section on the wire.
+    bool has_zarcanum_inputs() const {
+      return std::any_of(vin.begin(), vin.end(),
+        [](const txin_v& i){ return std::holds_alternative<txin_zc_input>(i); });
+    }
 
     // hash cache
     mutable crypto::hash hash;
@@ -318,10 +380,18 @@ namespace cryptonote
       {
         if (!vin.empty())
         {
+          // HF21: zarcanum (tx_out_zarcanum) outputs carry their own
+          // commitments/range proofs in token_proofs, not in the native rct
+          // ecdhInfo/outPk/bulletproof arrays -- those are sized to the
+          // non-zarcanum output count.
+          size_t native_outputs = 0;
+          for (const auto& o : vout)
+            if (!std::holds_alternative<tx_out_zarcanum>(o.target))
+              ++native_outputs;
           {
             ar.tag("rct_signatures");
             auto obj = ar.begin_object();
-            rct_signatures.serialize_rctsig_base(ar, vin.size(), vout.size());
+            rct_signatures.serialize_rctsig_base(ar, vin.size(), native_outputs);
           }
 
           if (Binary)
@@ -331,8 +401,46 @@ namespace cryptonote
           {
             ar.tag("rctsig_prunable");
             auto obj = ar.begin_object();
-            rct_signatures.p.serialize_rctsig_prunable(ar, rct_signatures.type, vin.size(), vout.size(),
-                vin.size() > 0 && std::holds_alternative<txin_to_key>(vin[0]) ? var::get<txin_to_key>(vin[0]).key_offsets.size() - 1 : 0);
+            size_t mixin = 0;
+            if (!vin.empty())
+            {
+              if (std::holds_alternative<txin_to_key>(vin[0]))
+                mixin = var::get<txin_to_key>(vin[0]).key_offsets.size() - 1;
+              else if (std::holds_alternative<txin_zc_input>(vin[0]))
+                mixin = var::get<txin_zc_input>(vin[0]).key_offsets.size() - 1;
+            }
+            // HF21: zarcanum (txin_zc_input) inputs are proven via their own
+            // ZC_sig, not via the native CLSAGs/pseudoOuts arrays here --
+            // those are sized to the native-only input count.
+            size_t native_inputs = 0;
+            for (const auto& in : vin)
+              if (std::holds_alternative<txin_to_key>(in))
+                ++native_inputs;
+            rct_signatures.p.serialize_rctsig_prunable(ar, rct_signatures.type, native_inputs, native_outputs, mixin);
+          }
+
+          // HF21: private token input signatures. Emitted first, under the
+          // "signatures" tag, as a signature_v vector (each a { "ZC_sig": {...} }).
+          // Present only when the tx spends a zarcanum input; the gate is
+          // prefix-derivable (has_zarcanum_inputs) so the deserializer knows
+          // whether to read the field. This gate and order must stay identical
+          // in calculate_transaction_prunable_hash or the prunable hash won't
+          // reproduce.
+          if (has_zarcanum_inputs())
+          {
+            ar.tag("signatures");
+            serialization_s::value(ar, zc_sig);
+          }
+
+          // HF21: private token proofs (present when has_zarcanum_outputs()
+          // or for update_token/burn_token txs). Burn-all transactions can
+          // consume confidential inputs without producing any confidential
+          // outputs, so the tx type must participate in the deserialization
+          // gate or the trailing proof bytes will be left unread.
+          if (!token_proofs.empty() || has_zarcanum_outputs() || type == txtype::update_token || type == txtype::burn_token)
+          {
+            ar.tag("token_proofs");
+            serialization_s::value(ar, token_proofs);
           }
         }
       }
@@ -349,9 +457,15 @@ namespace cryptonote
       {
         if (!vin.empty())
         {
+          // HF21: native rct arrays are sized to non-zarcanum outputs only
+          // (see note in the main serializer above).
+          size_t native_outputs = 0;
+          for (const auto& o : vout)
+            if (!std::holds_alternative<tx_out_zarcanum>(o.target))
+              ++native_outputs;
           ar.tag("rct_signatures");
           auto obj = ar.begin_object();
-          rct_signatures.serialize_rctsig_base(ar, vin.size(), vout.size());
+          rct_signatures.serialize_rctsig_base(ar, vin.size(), native_outputs);
         }
       }
       if (Archive::is_deserializer)
@@ -529,7 +643,8 @@ namespace cryptonote
   constexpr txtype transaction_prefix::get_max_type_for_hf(uint8_t hf_version)
   {
     txtype result = txtype::standard;
-    if      (hf_version >= network_version_18_bns)              result = txtype::coin_burn;
+    if      (hf_version >= HF_VERSION_PRIVATE_TOKENS)           result = txtype::burn_token;
+    else if (hf_version >= network_version_18_bns)              result = txtype::coin_burn;
     else if (hf_version >= network_version_16)                  result = txtype::beldex_name_system;
     else if (hf_version >= network_version_15_flash)            result = txtype::stake;
     else if (hf_version >= network_version_11_infinite_staking) result = txtype::key_image_unlock;
@@ -560,6 +675,10 @@ namespace cryptonote
       case txtype::stake:                   return "stake";
       case txtype::beldex_name_system:      return "beldex_name_system";
       case txtype::coin_burn:               return "coin_burn";
+      case txtype::deploy_new_token:        return "deploy_new_token";
+      case txtype::mint_token:              return "mint_token";
+      case txtype::update_token:            return "update_token";
+      case txtype::burn_token:              return "burn_token";
       default: assert(false);               return "xx_unhandled_type";
     }
   }
@@ -594,8 +713,10 @@ VARIANT_TAG(cryptonote::txin_gen, "gen", 0xff);
 VARIANT_TAG(cryptonote::txin_to_script, "script", 0x0);
 VARIANT_TAG(cryptonote::txin_to_scripthash, "scripthash", 0x1);
 VARIANT_TAG(cryptonote::txin_to_key, "key", 0x2);
+VARIANT_TAG(cryptonote::txin_zc_input, "zc_input", 0x3);
 VARIANT_TAG(cryptonote::txout_to_script, "script", 0x0);
 VARIANT_TAG(cryptonote::txout_to_scripthash, "scripthash", 0x1);
 VARIANT_TAG(cryptonote::txout_to_key, "key", 0x2);
+VARIANT_TAG(cryptonote::tx_out_zarcanum, "zarcanum", 0x3);
 VARIANT_TAG(cryptonote::transaction, "tx", 0xcc);
 VARIANT_TAG(cryptonote::block, "block", 0xbb);
