@@ -547,7 +547,7 @@ namespace cryptonote
   };
 
   // HF21: private token (confidential asset) descriptor operation, carried in
-  // tx.extra.  One per deploy_new_token / mint_token / update_token / burn_token
+  // tx.extra.  One per register_private_token / mint_token / update_token / burn_token
   // transaction.
   struct token_descriptor_base
   {

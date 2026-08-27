@@ -127,6 +127,14 @@ namespace cryptonote { enum class token_descriptor_operation_type : uint8_t; }
 
 namespace tokens
 {
+// Registration no longer burns BDX. Instead the registering wallet must create
+// a native output paying itself REGISTRATION_COLLATERAL_AMOUNT, locked for
+// REGISTRATION_COLLATERAL_LOCK_BLOCKS; consensus rejects a registration that
+// does not carry one. The stake is returned to the owner when the lock expires,
+// so the cost is opportunity rather than destruction.
+inline constexpr uint64_t REGISTRATION_COLLATERAL_AMOUNT = 10000 * COIN;
+inline constexpr uint64_t REGISTRATION_COLLATERAL_LOCK_BLOCKS = 2880 * 30 * 6;
+
 // Burn required (in addition to the normal tx fee) for each private-token
 // descriptor operation.  HF21+.
 constexpr uint64_t burn_needed(uint8_t hf_version, cryptonote::token_descriptor_operation_type op_type)
@@ -135,8 +143,8 @@ constexpr uint64_t burn_needed(uint8_t hf_version, cryptonote::token_descriptor_
 
   switch (static_cast<uint8_t>(op_type))
   {
-    case 1: // register_token (deploy_new_token)
-      return basic_fee * 2; // Higher fee (e.g. 200 BDX)
+    case 1: // register_token (register_private_token)
+      return 0; // Registration uses locked collateral instead of burning BDX.
     case 2: // mint_token
       return basic_fee / 2;  // Slightly low (e.g. 50 BDX)
     case 3: // update_token

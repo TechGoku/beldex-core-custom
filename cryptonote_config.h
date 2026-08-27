@@ -70,7 +70,7 @@ using namespace std::literals;
 
 // ── Mandatory fan-out for deploy / mint transactions (HF21+) ───────────────
 //
-// Every deploy_new_token or mint_token transaction MUST produce at least
+// Every register_private_token or mint_token transaction MUST produce at least
 // MIN_TOKEN_MINT_OUTPUTS tx_out_zarcanum outputs.  Value = mixin + 1 = 10:
 // guarantees a full ring of 9 decoys + 1 real is always achievable using only
 // prior ZC outputs of the same token, independent of the BDX pool.
@@ -219,7 +219,7 @@ constexpr uint64_t DIFFICULTY_BLOCKS_COUNT(bool before_hf16)
 #define HF_VERSION_CLSAG                        cryptonote::network_version_15_flash
 #define HF_VERSION_PROOF_BTENC                  cryptonote::network_version_18_bns
 #define HF_VERSION_BULLETPROOF_PLUS             cryptonote::network_version_20_bulletproof_plus
-#define HF_VERSION_PRIVATE_TOKENS               cryptonote::network_version_21_private_tokens
+#define HF_VERSION_PRIVATE_TOKENS               cryptonote::network_version_22_private_tokens
 
 #define PER_KB_FEE_QUANTIZATION_DECIMALS        8
 
@@ -388,7 +388,11 @@ namespace cryptonote
     network_version_18_bns,
     network_version_19,
     network_version_20_bulletproof_plus,
-    network_version_21_private_tokens, // Private custom token transfers (confidential assets)
+    // 21 is bulletproof_plus on this network and already has a scheduled
+    // mainnet activation; private tokens are 22. Keeping 21 named for tokens
+    // here would make the client treat an ordinary hf21 chain as token-capable.
+    network_version_21_bulletproof_plus,
+    network_version_22_private_tokens, // Private custom token transfers
 
     network_version_count,
   };

@@ -184,6 +184,10 @@ namespace cryptonote
     bool is_integrated;
     // Private token (HF21+). null_tid = native BDX output (txout_to_key).
     crypto::token_id token_id = crypto::null_tid;
+    // Per-destination unlock time; 0 means "use the transaction's". Token
+    // registration needs this: its collateral output must be locked while the
+    // rest of the transaction's outputs are not.
+    uint64_t unlock_time = 0;
 
     bool is_zarcanum() const { return token_id != crypto::null_tid; }
 
