@@ -52,15 +52,15 @@ using namespace std::literals;
 #define CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE_V17         2
 #define CRYPTONOTE_DEFAULT_TX_MIXIN                     9
 
-// ── Private token ring design (HF21+) ─────────────────────────────────
+// ── Privacy token ring design (HF21+) ─────────────────────────────────
 //
-// Zarcanum inputs (spending a tx_out_zarcanum) use the SAME amount-0 output
+// Zyphora inputs (spending a tx_out_zyphora) use the SAME amount-0 output
 // pool as native BDX RingCT outputs for decoy selection.  Both BDX RCT outputs
-// (txout_to_key) and private token outputs (tx_out_zarcanum) store
+// (txout_to_key) and privacy token outputs (tx_out_zyphora) store
 // tx_out.amount == 0 on-chain, so they live in the same bucket.
 //
 // Amount balance and token integrity are proven separately:
-//   - Balance:   zc_balance_proof     (double Schnorr over X and G)
+//   - Balance:   zy_balance_proof     (double Schnorr over X and G)
 //   - Token:     BGE surjection proof (proves output token is real)
 //   - Range:     BulletproofPlus      (proves amounts in [0, 2^64))
 //
@@ -70,10 +70,10 @@ using namespace std::literals;
 
 // ── Mandatory fan-out for deploy / mint transactions (HF21+) ───────────────
 //
-// Every register_private_token or mint_token transaction MUST produce at least
-// MIN_TOKEN_MINT_OUTPUTS tx_out_zarcanum outputs.  Value = mixin + 1 = 10:
+// Every register_privacy_token or mint_token transaction MUST produce at least
+// MIN_TOKEN_MINT_OUTPUTS tx_out_zyphora outputs.  Value = mixin + 1 = 10:
 // guarantees a full ring of 9 decoys + 1 real is always achievable using only
-// prior ZC outputs of the same token, independent of the BDX pool.
+// prior ZY outputs of the same token, independent of the BDX pool.
 #define MIN_TOKEN_MINT_OUTPUTS                          (CRYPTONOTE_DEFAULT_TX_MIXIN + 1) // 10
 #define FINAL_SUBSIDY_PER_MINUTE                        ((uint64_t)500000000) // 3 * pow(10, 7)
 
@@ -298,7 +298,7 @@ namespace config
   inline constexpr std::string_view HASH_KEY_CLSAG_ROUND = "CLSAG_round"sv;
   inline constexpr std::string_view HASH_KEY_CLSAG_AGG_0 = "CLSAG_agg_0"sv;
   inline constexpr std::string_view HASH_KEY_CLSAG_AGG_1 = "CLSAG_agg_1"sv;
-  // 3-layer CLSAG-GGX (zarcanum ZC_sig): layer 0 = stealth address (G),
+  // 3-layer CLSAG-GGX (zyphora ZY_sig): layer 0 = stealth address (G),
   // layer 1 = amount commitment (G), layer 2 = blinded token id (X).
   inline constexpr std::string_view HASH_KEY_CLSAG_GGX_ROUND = "CLSAG_GGX_round"sv;
   inline constexpr std::string_view HASH_KEY_CLSAG_GGX_AGG_0 = "CLSAG_GGX_agg_0"sv;
@@ -389,7 +389,7 @@ namespace cryptonote
     network_version_19,
     network_version_20_bulletproof_plus,
     // 21 is bulletproof_plus on this network and already has a scheduled
-    // mainnet activation; private tokens are 22. Keeping 21 named for tokens
+    // mainnet activation; privacy tokens are 22. Keeping 21 named for tokens
     // here would make the client treat an ordinary hf21 chain as token-capable.
     network_version_21_bulletproof_plus,
     network_version_22_private_tokens, // Private custom token transfers

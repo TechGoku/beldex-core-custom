@@ -20,7 +20,7 @@
 #pragma once
 
 // ---------------------------------------------------------------------------
-// Private-token zero-knowledge proof STRUCTURES (HF21+).
+// Privacy-token zero-knowledge proof STRUCTURES (HF21+).
 //
 // Split out of token_proofs.h so that ringct/rctTypes.h can pull in just the
 // struct definitions it needs for its proof-wrapper types, without a circular
@@ -35,6 +35,8 @@
 // it directly; include ringct/rctTypes.h or crypto/token_proofs.h instead.
 // ---------------------------------------------------------------------------
 
+#include <stdexcept>
+#include "crypto/crypto-ops.h"     // sc_check (canonical-scalar validation at parse time)
 #include "serialization/serialization.h" // BEGIN_SERIALIZE_OBJECT, FIELD
 
 namespace crypto {
@@ -47,6 +49,8 @@ struct schnorr_sig_s
     BEGIN_SERIALIZE_OBJECT()
       FIELD(y)
       FIELD(c)
+      if (sc_check(y.bytes) != 0 || sc_check(c.bytes) != 0)
+        throw std::runtime_error("Bad schnorr_sig_s serialization (non-canonical scalar)");
     END_SERIALIZE()
 };
 
@@ -60,6 +64,8 @@ struct linear_composition_proof_s
       FIELD(y0)
       FIELD(y1)
       FIELD(c)
+      if (sc_check(y0.bytes) != 0 || sc_check(y1.bytes) != 0 || sc_check(c.bytes) != 0)
+        throw std::runtime_error("Bad linear_composition_proof_s serialization (non-canonical scalar)");
     END_SERIALIZE()
 };
 
@@ -73,6 +79,8 @@ struct double_schnorr_sig_s
       FIELD(y0)
       FIELD(y1)
       FIELD(c)
+      if (sc_check(y0.bytes) != 0 || sc_check(y1.bytes) != 0 || sc_check(c.bytes) != 0)
+        throw std::runtime_error("Bad double_schnorr_sig_s serialization (non-canonical scalar)");
     END_SERIALIZE()
 };
 
@@ -92,12 +100,19 @@ struct BGE_proof_s
       FIELD(f)
       FIELD(y)
       FIELD(z)
+      if (Pk.empty() || f.size() != Pk.size() * 3)
+        throw std::runtime_error("Bad BGE_proof_s serialization");
+      if (sc_check(y.bytes) != 0 || sc_check(z.bytes) != 0)
+        throw std::runtime_error("Bad BGE_proof_s serialization (non-canonical scalar)");
+      for (const auto& fi : f)
+        if (sc_check(fi.bytes) != 0)
+          throw std::runtime_error("Bad BGE_proof_s serialization (non-canonical f scalar)");
     END_SERIALIZE()
 };
 
 struct vector_ug_aggregation_proof_s
 {
-    rct::keyV amount_commitments_for_rp_aggregation; // E'_j, one per ZC output, premultiplied by 1/8
+    rct::keyV amount_commitments_for_rp_aggregation; // E'_j, one per ZY output, premultiplied by 1/8
     rct::keyV y0s; // response scalars (knowledge of amount_j)
     rct::keyV y1s; // response scalars (knowledge of mask_j + w*y'_j)
     rct::key  c;   // common Fiat-Shamir challenge
@@ -107,6 +122,18 @@ struct vector_ug_aggregation_proof_s
       FIELD(y0s)
       FIELD(y1s)
       FIELD(c)
+      if (amount_commitments_for_rp_aggregation.empty() ||
+          y0s.size() != amount_commitments_for_rp_aggregation.size() ||
+          y1s.size() != amount_commitments_for_rp_aggregation.size())
+        throw std::runtime_error("Bad vector_ug_aggregation_proof_s serialization");
+      if (sc_check(c.bytes) != 0)
+        throw std::runtime_error("Bad vector_ug_aggregation_proof_s serialization (non-canonical c)");
+      for (const auto& s : y0s)
+        if (sc_check(s.bytes) != 0)
+          throw std::runtime_error("Bad vector_ug_aggregation_proof_s serialization (non-canonical y0s)");
+      for (const auto& s : y1s)
+        if (sc_check(s.bytes) != 0)
+          throw std::runtime_error("Bad vector_ug_aggregation_proof_s serialization (non-canonical y1s)");
     END_SERIALIZE()
 };
 

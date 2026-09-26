@@ -438,7 +438,7 @@ namespace rct {
         return X;
     }
 
-    // Pedersen commitment for a private token output:
+    // Pedersen commitment for a privacy token output:
     //   C = amount * T + mask * G
     // where T is the blinded token id (T = token_id + r*X) -- for an output,
     // its OWN T; for a pseudo-output (spend-side), T_real = token_id + real_r*X
@@ -457,7 +457,7 @@ namespace rct {
         return C;
     }
 
-    // Blind a token ID for a tx_out_zarcanum output:
+    // Blind an token ID for a tx_out_zyphora output:
     //   T = token_id + r * X
     // where r is the per-output blinding scalar
     key blindTokenId(const key& token_id, const key& r) {

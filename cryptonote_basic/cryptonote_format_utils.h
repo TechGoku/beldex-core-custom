@@ -168,24 +168,27 @@ namespace cryptonote
   bool get_payment_id_from_tx_extra_nonce(const blobdata& extra_nonce, crypto::hash& payment_id);
   bool get_encrypted_payment_id_from_tx_extra_nonce(const blobdata& extra_nonce, crypto::hash8& payment_id);
   bool add_burned_amount_to_tx_extra(std::vector<uint8_t>& tx_extra, uint64_t burn);
+  uint64_t get_burned_amount_from_tx_extra(const std::vector<uint8_t>& tx_extra);
+  bool get_collateral_lock_from_tx_extra(const std::vector<uint8_t>& tx_extra, tx_extra_collateral_lock& lock);
+  bool add_collateral_lock_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_collateral_lock& lock);
   bool add_token_descriptor_operation_to_tx_extra(std::vector<uint8_t>& tx_extra, const tx_extra_token_descriptor_operation& op);
   bool get_token_descriptor_operation_from_tx_extra(const std::vector<uint8_t>& tx_extra, tx_extra_token_descriptor_operation& op, size_t skip = 0);
+  bool is_out_to_acc(const account_keys& acc, const txout_to_key& out_key, const crypto::public_key& tx_pub_key, const std::vector<crypto::public_key>& additional_tx_public_keys, size_t output_index);
+  // Overload for privacy token outputs (HF21+): checks stealth_address match.
+  bool is_out_to_acc(const account_keys& acc, const tx_out_zyphora& zout, const crypto::public_key& tx_pub_key, size_t output_index);
 
-  // Overload for private token outputs (HF21+): checks stealth_address match.
-  bool is_out_to_acc(const account_keys& acc, const tx_out_zarcanum& zout, const crypto::public_key& tx_pub_key, size_t output_index);
-
-  // HF21: domain-separated scalar derivation for zarcanum output fields.
+  // HF21: domain-separated scalar derivation for zyphora output fields.
   // domain: "token_blind" -> token ID blinding scalar r (T = token_id + r*X)
   //         "amount_mask" -> Pedersen mask (C = amount*T + mask*G, T = blinded_token_id)
   //         "enc_amount"  -> amount encryption key
-  rct::key zarcanum_derivation_to_scalar(const crypto::key_derivation& derivation,
+  rct::key zyphora_derivation_to_scalar(const crypto::key_derivation& derivation,
                                          size_t output_index,
                                          const char* domain);
 
-  // HF21: decode a tx_out_zarcanum received by acc.
+  // HF21: decode a tx_out_zyphora received by acc.
   // On success fills: amount, token_id, amount_mask, token_blinding_mask.
-  bool decode_zarcanum_output(const account_keys& acc,
-                              const tx_out_zarcanum& zout,
+  bool decode_zyphora_output(const account_keys& acc,
+                              const tx_out_zyphora& zout,
                               const crypto::key_derivation& derivation,
                               size_t output_index,
                               uint64_t& amount_out,
