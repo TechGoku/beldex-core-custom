@@ -130,32 +130,76 @@ namespace tokens
 // A registration costs two things. The registering wallet must create a native
 // output paying itself REGISTRATION_COLLATERAL_AMOUNT, locked for
 // REGISTRATION_COLLATERAL_LOCK_BLOCKS -- returned when the lock expires, so an
-// opportunity cost. And it pays REGISTRATION_FEE_AMOUNT outright: half burned,
-// half to the governance wallet through the miner fee. Consensus rejects a
+// opportunity cost. And it pays a registration fee outright: part burned, part
+// to the governance wallet through the miner fee. Consensus rejects a
 // registration missing either.
 inline constexpr uint64_t REGISTRATION_COLLATERAL_AMOUNT = 10000 * COIN;
 inline constexpr uint64_t REGISTRATION_COLLATERAL_LOCK_BLOCKS = 2880 * 30 * 6;
 inline constexpr uint64_t REGISTRATION_COLLATERAL_LOCK_TOLERANCE_BLOCKS = 60;
-inline constexpr uint64_t REGISTRATION_FEE_AMOUNT            = 1'000 * COIN;
-inline constexpr uint64_t REGISTRATION_FEE_BURN_AMOUNT       = REGISTRATION_FEE_AMOUNT / 2;
-inline constexpr uint64_t REGISTRATION_FEE_GOVERNANCE_AMOUNT = REGISTRATION_FEE_AMOUNT - REGISTRATION_FEE_BURN_AMOUNT;
 
-// Burn required (in addition to the normal tx fee) for each privacy-token
-// descriptor operation.  HF21+.
-constexpr uint64_t burn_needed(uint8_t hf_version, cryptonote::token_descriptor_operation_type op_type)
+// Token operation surcharges, on top of the ordinary network fee. Mainnet and
+// testnet differ; fee_for_operation() picks the pair consensus checks.
+inline constexpr uint64_t REGISTRATION_FEE_BURN_AMOUNT       = 500 * COIN;
+inline constexpr uint64_t REGISTRATION_FEE_GOVERNANCE_AMOUNT = 500 * COIN;
+inline constexpr uint64_t REGISTRATION_FEE_AMOUNT =
+    REGISTRATION_FEE_BURN_AMOUNT + REGISTRATION_FEE_GOVERNANCE_AMOUNT;
+inline constexpr uint64_t MINT_FEE_BURN_AMOUNT   = 50 * COIN;
+inline constexpr uint64_t UPDATE_FEE_BURN_AMOUNT = 10 * COIN;
+inline constexpr uint64_t BURN_FEE_BURN_AMOUNT   = 0;
+
+inline constexpr uint64_t REGISTRATION_FEE_BURN_AMOUNT_TESTNET       = 50 * COIN;
+inline constexpr uint64_t REGISTRATION_FEE_GOVERNANCE_AMOUNT_TESTNET = 50 * COIN;
+inline constexpr uint64_t REGISTRATION_FEE_AMOUNT_TESTNET =
+    REGISTRATION_FEE_BURN_AMOUNT_TESTNET + REGISTRATION_FEE_GOVERNANCE_AMOUNT_TESTNET;
+inline constexpr uint64_t MINT_FEE_BURN_AMOUNT_TESTNET   = 5 * COIN;
+inline constexpr uint64_t UPDATE_FEE_BURN_AMOUNT_TESTNET = 1 * COIN;
+inline constexpr uint64_t BURN_FEE_BURN_AMOUNT_TESTNET   = 0;
+
+struct operation_fee
 {
-  uint64_t basic_fee = 100 * COIN;
+  uint64_t burn_amount = 0;
+  uint64_t governance_amount = 0;
+  bool exact_burn = false;
+  bool enabled = false;
 
+  // txnFee includes both the declared burn and the governance carve-out.
+  // Subtract only after checking burn <= txnFee to avoid unsigned underflow.
+  constexpr bool paid(uint64_t burned, uint64_t txn_fee) const
+  {
+    return enabled && burned <= txn_fee &&
+        (exact_burn ? burned == burn_amount : burned >= burn_amount) &&
+        txn_fee - burned >= governance_amount;
+  }
+};
+
+// What consensus requires a token operation to burn and to leave for
+// governance. hf_version and nettype are the raw values of
+// cryptonote::network_version_* and cryptonote::network_type, compared
+// numerically -- like bns::burn_needed -- so this header does not need
+// cryptonote_config.h. Mainnet (and fakechain): 1000 BDX registration;
+// testnet and devnet: 100 BDX.
+constexpr operation_fee fee_for_operation(uint8_t hf_version,
+                                          cryptonote::token_descriptor_operation_type op_type,
+                                          uint8_t nettype)
+{
+  if (hf_version < 22) // cryptonote::network_version_22_private_tokens
+    return {};
+
+  const bool testnet = nettype == 1 /* TESTNET */ || nettype == 2 /* DEVNET */;
   switch (static_cast<uint8_t>(op_type))
   {
-    case 1: // register_token (register_privacy_token)
-      return REGISTRATION_FEE_BURN_AMOUNT;
+    case 1: // register_token
+      return testnet
+          ? operation_fee{REGISTRATION_FEE_BURN_AMOUNT_TESTNET, REGISTRATION_FEE_GOVERNANCE_AMOUNT_TESTNET, true, true}
+          : operation_fee{REGISTRATION_FEE_BURN_AMOUNT, REGISTRATION_FEE_GOVERNANCE_AMOUNT, true, true};
     case 2: // mint_token
-      return basic_fee / 2;  // Slightly low (e.g. 50 BDX)
+      return {testnet ? MINT_FEE_BURN_AMOUNT_TESTNET : MINT_FEE_BURN_AMOUNT, 0, false, true};
     case 3: // update_token
-      return basic_fee / 10; // Very low fee (e.g. 10 BDX)
+      return {testnet ? UPDATE_FEE_BURN_AMOUNT_TESTNET : UPDATE_FEE_BURN_AMOUNT, 0, false, true};
+    case 4: // burn_token
+      return {testnet ? BURN_FEE_BURN_AMOUNT_TESTNET : BURN_FEE_BURN_AMOUNT, 0, false, true};
     default:
-      return 0;
+      return {}; // an unknown operation never gets an enabled zero-fee policy
   }
 }
 }; // namespace tokens
