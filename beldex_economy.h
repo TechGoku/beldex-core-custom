@@ -134,6 +134,16 @@ namespace tokens
 // to the governance wallet through the miner fee. Consensus rejects a
 // registration missing either.
 inline constexpr uint64_t REGISTRATION_COLLATERAL_AMOUNT = 10000 * COIN;
+inline constexpr uint64_t REGISTRATION_COLLATERAL_AMOUNT_TESTNET = 100 * COIN;
+
+// The collateral consensus requires. nettype is the raw cryptonote::network_type,
+// as in fee_for_operation. Only testnet locks less; unlike the fees, devnet keeps
+// the mainnet figure.
+constexpr uint64_t registration_collateral_amount(uint8_t nettype)
+{
+  return nettype == 1 /* TESTNET */ ? REGISTRATION_COLLATERAL_AMOUNT_TESTNET
+                                    : REGISTRATION_COLLATERAL_AMOUNT;
+}
 inline constexpr uint64_t REGISTRATION_COLLATERAL_LOCK_BLOCKS = 2880 * 30 * 6;
 inline constexpr uint64_t REGISTRATION_COLLATERAL_LOCK_TOLERANCE_BLOCKS = 60;
 
